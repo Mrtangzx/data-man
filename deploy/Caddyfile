@@ -1,0 +1,7 @@
+{$NOVA_HOST:localhost} {
+  encode zstd gzip
+  reverse_proxy /api/* api:8788
+  reverse_proxy /healthz api:8788
+  reverse_proxy web:80
+}
+

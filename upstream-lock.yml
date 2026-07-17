@@ -1,0 +1,61 @@
+schema_version: 1
+generated_at: "2026-07-16"
+policy: "Source commits and source licenses are pinned. Model-weight and transitive dependency terms remain separate production gates."
+upstreams:
+  openavatarchat:
+    repository: https://github.com/HumanAIGC-Engineering/OpenAvatarChat
+    release: "0.6.0"
+    commit: "b28cc34714660fb9bbf4d9d456c011769cc84e76"
+    role: realtime-engine
+    source_license: Apache-2.0
+    source_license_sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    model_license_gate: required
+  openavatarchat_webui:
+    repository: https://github.com/HumanAIGC-Engineering/OpenAvatarChat-WebUI
+    ref: main
+    commit: "1b23c2658f71aba93d222bc042f93faf7feed7d5"
+    role: protocol-reference
+    source_license: Apache-2.0
+    source_license_sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    model_license_gate: not-applicable
+  soulx_flashhead:
+    repository: https://github.com/Soul-AILab/SoulX-FlashHead
+    ref: main
+    commit: "12467cef31a9554cd9682a0521e6e87deaef9810"
+    role: realtime-image-animation
+    source_license: Apache-2.0
+    source_license_sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    model_license_gate: required
+  echomimic_v3:
+    repository: https://github.com/antgroup/echomimic_v3
+    ref: main
+    commit: "7e89489ca51c0d008fc1963ec6c03fc5bd0b9397"
+    role: offline-image-motion-engine
+    source_license: Apache-2.0
+    source_license_sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    model_license_gate: required
+  musetalk:
+    repository: https://github.com/TMElyralab/MuseTalk
+    release: "1.5"
+    ref: main
+    commit: "0a89dec45a0192b824e3cf4daf96c239440c5ed8"
+    role: offline-render-engine
+    source_license: MIT
+    source_license_sha256: "992ec5fd1dd4964cfa003665196cd0c0c10a7a5aa10109991e964eebd2c7f116"
+    model_license_gate: required
+  cosyvoice:
+    repository: https://github.com/FunAudioLLM/CosyVoice
+    ref: main
+    commit: "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc"
+    role: voice-engine
+    source_license: Apache-2.0
+    source_license_sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    model_license_gate: required
+  livetalking:
+    repository: https://github.com/lipku/LiveTalking
+    ref: main
+    commit: "fd5cda269780d410405a08d819074fa9af0db29d"
+    role: optional-adapter-only
+    source_license: Apache-2.0
+    source_license_sha256: "6b934ce628eac39c44f6401b52efc0884db51c937777f1122f0b56648813f0b6"
+    model_license_gate: required

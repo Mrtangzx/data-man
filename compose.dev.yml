@@ -1,0 +1,59 @@
+name: nova
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: nova
+      POSTGRES_USER: nova
+      POSTGRES_PASSWORD: nova
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nova -d nova"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - nova-postgres:/var/lib/postgresql/data
+    networks: [nova-internal]
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      NOVA_PROFILE: dev
+      NOVA_DATABASE_URL: postgresql+psycopg://nova:nova@postgres:5432/nova
+      NOVA_STORAGE_DIR: /data/artifacts
+      NOVA_ALLOWED_ORIGINS: http://127.0.0.1:8787,http://localhost:8787
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/healthz')"]
+      interval: 3s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - nova-artifacts:/data/artifacts
+    ports:
+      - "127.0.0.1:8788:8788"
+    networks: [nova-internal]
+
+  web:
+    build:
+      context: ./web
+      args:
+        VITE_API_BASE: /api
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8787:80"
+    networks: [nova-internal]
+
+volumes:
+  nova-postgres:
+  nova-artifacts:
+
+networks:
+  nova-internal:
+

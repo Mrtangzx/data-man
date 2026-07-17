@@ -1,0 +1,90 @@
+name: nova
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file: .env
+    environment:
+      POSTGRES_DB: nova
+      POSTGRES_USER: nova
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nova -d nova"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - nova-postgres:/var/lib/postgresql/data
+    networks: [nova-internal]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    networks: [nova-internal]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    env_file: .env
+    volumes:
+      - nova-objects:/data
+    networks: [nova-internal]
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      NOVA_PROFILE: full
+      NOVA_DATABASE_URL: postgresql+psycopg://nova:${POSTGRES_PASSWORD}@postgres:5432/nova
+      NOVA_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - nova-artifacts:/data/artifacts
+    networks: [nova-internal]
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "nova.worker"]
+    env_file: .env
+    environment:
+      NOVA_PROFILE: full
+      NOVA_DATABASE_URL: postgresql+psycopg://nova:${POSTGRES_PASSWORD}@postgres:5432/nova
+      NOVA_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes:
+      - nova-artifacts:/data/artifacts
+    networks: [nova-internal]
+
+  web:
+    build: ./web
+    depends_on: [api]
+    networks: [nova-internal]
+
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - nova-caddy:/data
+    depends_on: [web, api]
+    networks: [nova-internal]
+
+volumes:
+  nova-postgres:
+  nova-objects:
+  nova-artifacts:
+  nova-caddy:
+
+networks:
+  nova-internal:
+
