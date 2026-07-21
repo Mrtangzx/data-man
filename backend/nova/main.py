@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
 from fastapi import Depends, FastAPI, File, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -35,6 +34,10 @@ from .schemas import (
     ComputePlan,
     EngineDeploymentOut,
     HealthResponse,
+    LlmActiveProviderIn,
+    LlmProviderUpdate,
+    LlmProvidersOut,
+    LlmTestOut,
     JobListOut,
     PreflightCheck,
     PreflightResponse,
@@ -55,6 +58,14 @@ from .services.jobs import (
     emit_event,
     ensure_sample_video,
     serialize_job,
+)
+from .services.llm import (
+    chat_completion,
+    get_active_provider_id,
+    get_provider,
+    list_providers,
+    save_provider,
+    set_active_provider,
 )
 
 
@@ -120,18 +131,28 @@ def _deployment_out(db: Session, deployment: EngineDeployment) -> EngineDeployme
         .order_by(DeploymentObservation.observed_at.desc())
         .limit(1)
     )
+    active_provider = get_provider()
+    realtime_is_real = deployment.engine_kind == "realtime" and bool(active_provider.api_key.strip())
+    revision_capabilities = revision.capabilities_json
+    if realtime_is_real:
+        revision_capabilities = {
+            **revision_capabilities,
+            "mock": False,
+            "real_language": True,
+            "model": active_provider.model,
+        }
     return EngineDeploymentOut(
         id=deployment.id,
-        name=deployment.name,
+        name="真实语言实时引擎" if realtime_is_real else deployment.name,
         engine_kind=deployment.engine_kind,
-        target_kind=deployment.target_kind,
+        target_kind="openai_compatible" if realtime_is_real else deployment.target_kind,
         revision={
             "id": revision.id,
             "revision": revision.revision,
-            "adapter_type": revision.adapter_type,
+            "adapter_type": "llm.openai_compatible.v1" if realtime_is_real else revision.adapter_type,
             "image_digest": revision.image_digest,
             "model_hash": revision.model_hash,
-            "capabilities": revision.capabilities_json,
+            "capabilities": revision_capabilities,
         },
         observation=(
             {
@@ -148,6 +169,11 @@ def _deployment_out(db: Session, deployment: EngineDeployment) -> EngineDeployme
 
 
 def _session_out(session: RealtimeSession) -> RealtimeSessionOut:
+    provider_id = next(
+        (item.get("provider_id") for item in (session.transcript_json or []) if item.get("role") == "meta"),
+        get_active_provider_id(),
+    )
+    provider = get_provider(provider_id)
     return RealtimeSessionOut(
         session_id=session.id,
         state=session.state,
@@ -161,26 +187,20 @@ def _session_out(session: RealtimeSession) -> RealtimeSessionOut:
             "supports_microphone": True,
             "supports_interrupt": True,
             "supports_subtitles": True,
-            "provider": settings.llm_base_url,
-            "model": settings.llm_model,
+            "provider": provider.base_url,
+            "provider_id": provider.id,
+            "model": provider.model,
             "real_language": True,
         },
     )
 
 
 def _llm_reply(session: RealtimeSession) -> str:
-    if not settings.llm_configured:
-        raise NovaError(
-            "NOVA-RT-2501",
-            "尚未配置真实语言模型，当前不会返回演示回复。",
-            503,
-            details={
-                "fix": "复制 .env.example 为 .env，填写 NOVA_LLM_API_KEY，并重启 API。",
-                "provider": settings.llm_base_url,
-                "model": settings.llm_model,
-            },
-        )
-
+    provider_id = next(
+        (item.get("provider_id") for item in (session.transcript_json or []) if item.get("role") == "meta"),
+        get_active_provider_id(),
+    )
+    provider = get_provider(provider_id)
     messages = [{"role": "system", "content": settings.llm_system_prompt}]
     for item in (session.transcript_json or [])[-20:]:
         role = item.get("role")
@@ -188,58 +208,7 @@ def _llm_reply(session: RealtimeSession) -> str:
         if role in {"user", "assistant"} and isinstance(text_value, str) and text_value.strip():
             messages.append({"role": role, "content": text_value})
 
-    endpoint = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
-    try:
-        response = _call_llm(
-            endpoint,
-            {"Authorization": f"Bearer {settings.llm_api_key}", "Content-Type": "application/json"},
-            {"model": settings.llm_model, "messages": messages, "temperature": 0.7},
-        )
-    except httpx.TimeoutException as error:
-        raise NovaError(
-            "NOVA-RT-2503",
-            "语言模型响应超时。",
-            504,
-            retryable=True,
-            details={"fix": "检查模型服务状态，或增大 NOVA_LLM_TIMEOUT_SECONDS。"},
-        ) from error
-    except httpx.HTTPError as error:
-        raise NovaError(
-            "NOVA-RT-2504",
-            "无法连接语言模型服务。",
-            502,
-            retryable=True,
-            details={"fix": "检查 NOVA_LLM_BASE_URL、网络和模型服务状态。"},
-        ) from error
-
-    if response.status_code >= 400:
-        retryable = response.status_code == 429 or response.status_code >= 500
-        raise NovaError(
-            "NOVA-RT-2502",
-            f"语言模型服务返回 HTTP {response.status_code}。",
-            503 if retryable else 502,
-            retryable=retryable,
-            details={"fix": "检查 NOVA_LLM_API_KEY、NOVA_LLM_MODEL 和服务额度。"},
-        )
-
-    try:
-        body = response.json()
-        content = body["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError) as error:
-        raise NovaError(
-            "NOVA-RT-2505",
-            "语言模型返回了无法识别的响应。",
-            502,
-            details={"fix": "确认服务兼容 OpenAI Chat Completions 格式。"},
-        ) from error
-    if not isinstance(content, str) or not content.strip():
-        raise NovaError("NOVA-RT-2505", "语言模型返回了空回复。", 502)
-    return content.strip()
-
-
-def _call_llm(endpoint: str, headers: dict[str, str], payload: dict) -> httpx.Response:
-    with httpx.Client(timeout=settings.llm_timeout_seconds) as client:
-        return client.post(endpoint, headers=headers, json=payload)
+    return chat_completion(provider, messages)
 
 
 @app.get("/healthz", response_model=HealthResponse)
@@ -296,6 +265,34 @@ def compute_plan() -> ComputePlan:
         status="configured" if settings.profile not in {"dev", "lite"} else "recommended",
         next_action="在魔搭 Notebook 领取免费 A10 24GB，运行 deploy/modelscope/NOVA-ModelScope-A10.ipynb 完成真实成片纵切。",
     )
+
+
+@app.get("/api/v1/llm/providers", response_model=LlmProvidersOut)
+def get_llm_providers() -> dict:
+    return list_providers()
+
+
+@app.put("/api/v1/llm/providers/{provider_id}", response_model=dict)
+def update_llm_provider(provider_id: str, payload: LlmProviderUpdate) -> dict:
+    return save_provider(provider_id, payload.name, payload.base_url, payload.model, payload.api_key, payload.active)
+
+
+@app.put("/api/v1/llm/active", response_model=dict)
+def update_active_llm_provider(payload: LlmActiveProviderIn) -> dict:
+    return set_active_provider(payload.provider_id)
+
+
+@app.post("/api/v1/llm/providers/{provider_id}/test", response_model=LlmTestOut)
+def test_llm_provider(provider_id: str) -> LlmTestOut:
+    provider = get_provider(provider_id)
+    reply = chat_completion(
+        provider,
+        [
+            {"role": "system", "content": "你是连接测试助手，只回复：连接成功。"},
+            {"role": "user", "content": "请测试当前语言模型连接。"},
+        ],
+    )
+    return LlmTestOut(provider_id=provider.id, model=provider.model, reply=reply)
 
 
 @app.get("/api/v1/assets", response_model=list[AssetOut])
@@ -419,12 +416,14 @@ def probe_deployment(deployment_id: str, db: Session = Depends(get_db)) -> Probe
 
 @app.post("/api/v1/realtime/sessions", response_model=RealtimeSessionOut, status_code=201)
 def create_realtime_session(payload: RealtimeSessionCreate, db: Session = Depends(get_db)) -> RealtimeSessionOut:
-    if not settings.llm_configured:
+    provider_id = payload.provider_id or get_active_provider_id()
+    provider = get_provider(provider_id)
+    if not provider.api_key.strip():
         raise NovaError(
             "NOVA-RT-2501",
-            "尚未配置真实语言模型，无法启动实时交流。",
+            f"供应商“{provider.name}”尚未配置 API key，无法启动实时交流。",
             503,
-            details={"fix": "复制 .env.example 为 .env，填写 NOVA_LLM_API_KEY，并重启 API。"},
+            details={"fix": "打开系统设置，填写 API key 后保存。"},
         )
     deployment = db.get(EngineDeployment, payload.deployment_id)
     if not deployment or deployment.engine_kind != "realtime":
@@ -434,7 +433,7 @@ def create_realtime_session(payload: RealtimeSessionCreate, db: Session = Depend
         state="connected",
         state_version=2,
         engine_deployment_id=payload.deployment_id,
-        transcript_json=[],
+        transcript_json=[{"role": "meta", "provider_id": provider.id}],
     )
     db.add(session)
     db.commit()
@@ -466,7 +465,7 @@ def send_realtime_turn(
         raise NotFoundError("RealtimeSession")
     if session.state not in {"connected", "speaking", "listening"}:
         raise NovaError("NOVA-RT-2409", "The realtime session is not connected.", 409)
-    sequence = len(session.transcript_json) // 2 + 1
+    sequence = sum(1 for item in (session.transcript_json or []) if item.get("role") == "user") + 1
     session.transcript_json = [
         *(session.transcript_json or []),
         {"sequence": sequence, "role": "user", "text": payload.text, "at": now().isoformat()},

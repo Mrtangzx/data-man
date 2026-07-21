@@ -81,6 +81,20 @@ export interface SystemSummary {
   upstream_gate_resolved: boolean;
 }
 
+export interface LlmProvider {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  configured: boolean;
+  api_key_hint: string;
+}
+
+export interface LlmProvidersResponse {
+  providers: LlmProvider[];
+  active_provider_id: string;
+}
+
 export interface ComputePlan {
   mode: string;
   provider: string;

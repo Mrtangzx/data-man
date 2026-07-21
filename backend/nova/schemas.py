@@ -88,6 +88,7 @@ class RealtimeSessionCreate(BaseModel):
     deployment_id: str = "mock-realtime"
     avatar_version_id: str = "avatar_sample_v1"
     voice_enrollment_id: str = "voice_sample_v1"
+    provider_id: str | None = None
 
 
 class RealtimeSessionOut(BaseModel):
@@ -119,6 +120,38 @@ class RealtimeTurnOut(BaseModel):
     user_text: str
     assistant_text: str
     state: str
+
+
+class LlmProviderUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(min_length=1, max_length=500)
+    model: str = Field(min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, max_length=1000)
+    active: bool = True
+
+
+class LlmProviderOut(BaseModel):
+    id: str
+    name: str
+    base_url: str
+    model: str
+    configured: bool
+    api_key_hint: str
+
+
+class LlmProvidersOut(BaseModel):
+    providers: list[LlmProviderOut]
+    active_provider_id: str
+
+
+class LlmActiveProviderIn(BaseModel):
+    provider_id: str = Field(min_length=1, max_length=120)
+
+
+class LlmTestOut(BaseModel):
+    provider_id: str
+    model: str
+    reply: str
 
 
 class OutputSpec(BaseModel):

@@ -1,7 +1,5 @@
 import time
 
-import httpx
-
 from nova.config import get_settings
 from nova import main as main_module
 
@@ -77,17 +75,12 @@ def test_realtime_turn_uses_real_language_model(monkeypatch, client):
     monkeypatch.setattr(settings, "llm_api_key", "test-key")
     monkeypatch.setattr(settings, "llm_model", "test-model")
 
-    def fake_call(url, headers, payload):
-        assert url.endswith("/chat/completions")
-        assert headers["Authorization"] == "Bearer test-key"
-        assert payload["messages"][-1] == {"role": "user", "content": "你好"}
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": "你好！今天想聊点什么？"}}]},
-            request=httpx.Request("POST", url),
-        )
+    def fake_completion(provider, messages):
+        assert provider.api_key == "test-key"
+        assert messages[-1] == {"role": "user", "content": "你好"}
+        return "你好！今天想聊点什么？"
 
-    monkeypatch.setattr(main_module, "_call_llm", fake_call)
+    monkeypatch.setattr(main_module, "chat_completion", fake_completion)
     created = client.post("/api/v1/realtime/sessions", json={"deployment_id": "mock-realtime"})
     assert created.status_code == 201
     session_id = created.json()["session_id"]
@@ -123,6 +116,28 @@ def test_realtime_requires_llm_configuration(monkeypatch, client):
     assert response.status_code == 503
     assert response.json()["code"] == "NOVA-RT-2501"
     assert "无法启动实时交流" in response.json()["message"]
+
+
+def test_llm_provider_settings_do_not_return_api_key(monkeypatch, client):
+    saved = client.put(
+        "/api/v1/llm/providers/kimi",
+        json={
+            "name": "Kimi 测试",
+            "base_url": "https://api.moonshot.cn/v1",
+            "model": "kimi-k2.6",
+            "api_key": "secret-test-key",
+            "active": True,
+        },
+    )
+    assert saved.status_code == 200
+    assert "secret-test-key" not in saved.text
+
+    providers = client.get("/api/v1/llm/providers")
+    assert providers.status_code == 200
+    kimi = next(item for item in providers.json()["providers"] if item["id"] == "kimi")
+    assert kimi["configured"] is True
+    assert "secret-test-key" not in providers.text
+    assert providers.json()["active_provider_id"] == "kimi"
 
 
 def test_video_job_idempotency_and_artifact(client):

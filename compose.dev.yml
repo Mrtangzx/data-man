@@ -24,6 +24,10 @@ services:
       NOVA_DATABASE_URL: postgresql+psycopg://nova:nova@postgres:5432/nova
       NOVA_STORAGE_DIR: /data/artifacts
       NOVA_ALLOWED_ORIGINS: http://127.0.0.1:8787,http://localhost:8787
+      NOVA_LLM_BASE_URL: ${NOVA_LLM_BASE_URL:-https://api.openai.com/v1}
+      NOVA_LLM_API_KEY: ${NOVA_LLM_API_KEY:-}
+      NOVA_LLM_MODEL: ${NOVA_LLM_MODEL:-gpt-4o-mini}
+      NOVA_LLM_TIMEOUT_SECONDS: ${NOVA_LLM_TIMEOUT_SECONDS:-45}
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,4 +60,3 @@ volumes:
 
 networks:
   nova-internal:
-

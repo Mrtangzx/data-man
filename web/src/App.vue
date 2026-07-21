@@ -17,7 +17,7 @@ import {
 } from "@phosphor-icons/vue";
 import { API_BASE, api, readableError } from "./api";
 import { MockRealtimeClient } from "./realtime/MockRealtimeClient";
-import type { Asset, ComputePlan, Deployment, SystemSummary, VideoJob } from "./types";
+import type { Asset, ComputePlan, Deployment, LlmProvider, LlmProvidersResponse, SystemSummary, VideoJob } from "./types";
 
 type View = "realtime" | "video" | "assets" | "settings";
 type Transcript = { role: "user" | "assistant" | "system"; text: string };
@@ -29,6 +29,17 @@ const summary = ref<SystemSummary | null>(null);
 const computePlan = ref<ComputePlan | null>(null);
 const assets = ref<Asset[]>([]);
 const deployments = ref<Deployment[]>([]);
+const llmProviders = ref<LlmProvider[]>([]);
+const activeProviderId = ref("env");
+const selectedProviderId = ref("env");
+const providerName = ref("");
+const providerBaseUrl = ref("");
+const providerModel = ref("");
+const providerApiKey = ref("");
+const providerSaving = ref(false);
+const providerTesting = ref(false);
+const providerMessage = ref("");
+const providerError = ref("");
 
 const realtimeClient = new MockRealtimeClient();
 const realtimeState = ref<"idle" | "connecting" | "connected" | "listening" | "speaking" | "error">("idle");
@@ -91,16 +102,23 @@ async function loadWorkspace() {
   loading.value = true;
   globalError.value = "";
   try {
-    const [nextSummary, nextComputePlan, nextAssets, nextDeployments] = await Promise.all([
+    const [nextSummary, nextComputePlan, nextAssets, nextDeployments, nextProviders] = await Promise.all([
       api<SystemSummary>("/system/summary"),
       api<ComputePlan>("/system/compute-plan"),
       api<Asset[]>("/assets"),
       api<Deployment[]>("/engine-deployments"),
+      api<LlmProvidersResponse>("/llm/providers"),
     ]);
     summary.value = nextSummary;
     computePlan.value = nextComputePlan;
     assets.value = nextAssets;
     deployments.value = nextDeployments;
+    llmProviders.value = nextProviders.providers;
+    activeProviderId.value = nextProviders.active_provider_id;
+    if (!llmProviders.value.some((provider) => provider.id === selectedProviderId.value)) {
+      selectedProviderId.value = activeProviderId.value;
+    }
+    selectProvider(selectedProviderId.value);
     const realAvatar = avatarAssets.value.find((item) => item.id !== "avatar_sample_v1" && item.status === "ready");
     if (!avatarAssets.value.some((item) => item.id === selectedAvatar.value) || (selectedAvatar.value === "avatar_sample_v1" && realAvatar)) {
       selectedAvatar.value = realAvatar?.id || avatarAssets.value[0]?.id || "";
@@ -110,6 +128,60 @@ async function loadWorkspace() {
     globalError.value = readableError(error);
   } finally {
     loading.value = false;
+  }
+}
+
+function selectProvider(providerId: string) {
+  selectedProviderId.value = providerId;
+  const provider = llmProviders.value.find((item) => item.id === providerId);
+  if (!provider) return;
+  providerName.value = provider.name;
+  providerBaseUrl.value = provider.base_url;
+  providerModel.value = provider.model;
+  providerApiKey.value = "";
+  providerMessage.value = provider.configured ? `已配置：${provider.api_key_hint}` : "尚未配置 API key";
+  providerError.value = "";
+}
+
+async function saveProvider(showMessage = true) {
+  providerSaving.value = true;
+  providerError.value = "";
+  try {
+    await api<LlmProvider>(`/llm/providers/${selectedProviderId.value}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: providerName.value,
+        base_url: providerBaseUrl.value,
+        model: providerModel.value,
+        api_key: providerApiKey.value.trim() || null,
+        active: true,
+      }),
+    });
+    const refreshed = await api<LlmProvidersResponse>("/llm/providers");
+    llmProviders.value = refreshed.providers;
+    activeProviderId.value = refreshed.active_provider_id;
+    if (showMessage) providerMessage.value = "已保存并启用，新的实时会话将使用此模型。";
+    return true;
+  } catch (error) {
+    providerError.value = readableError(error);
+    return false;
+  } finally {
+    providerSaving.value = false;
+  }
+}
+
+async function testProviderConnection() {
+  const saved = await saveProvider(false);
+  if (!saved) return;
+  providerTesting.value = true;
+  providerError.value = "";
+  try {
+    const result = await api<{ reply: string; model: string }>(`/llm/providers/${selectedProviderId.value}/test`, { method: "POST" });
+    providerMessage.value = `连接成功：${result.reply}（${result.model}）`;
+  } catch (error) {
+    providerError.value = readableError(error);
+  } finally {
+    providerTesting.value = false;
   }
 }
 
@@ -556,6 +628,39 @@ onBeforeUnmount(() => {
             <div><dt>健康引擎</dt><dd>{{ summary?.deployments_healthy }}</dd></div>
             <div><dt>上游锁定</dt><dd>{{ summary?.upstream_gate_resolved ? "已完成" : "待完成" }}</dd></div>
           </dl>
+          <div class="provider-config">
+            <div class="library-heading">
+              <div>
+                <h2>语言模型供应商</h2>
+                <p>支持 Kimi、OpenAI、DeepSeek、通义及其他 OpenAI-compatible 服务。</p>
+              </div>
+              <span class="provider-status">{{ activeProviderId === selectedProviderId ? "当前使用" : "待启用" }}</span>
+            </div>
+            <label>供应商
+              <select v-model="selectedProviderId" @change="selectProvider(selectedProviderId)">
+                <option v-for="provider in llmProviders" :key="provider.id" :value="provider.id">
+                  {{ provider.name }}{{ provider.configured ? " · 已配置" : " · 未配置" }}
+                </option>
+              </select>
+            </label>
+            <div class="form-grid">
+              <label>显示名称<input v-model="providerName" type="text" placeholder="例如：公司 Kimi" /></label>
+              <label>模型名称<input v-model="providerModel" type="text" placeholder="例如：kimi-k2.6" /></label>
+            </div>
+            <label>Base URL<input v-model="providerBaseUrl" type="url" placeholder="https://api.example.com/v1" /></label>
+            <label>API key<input v-model="providerApiKey" type="password" autocomplete="new-password" placeholder="只在此处输入，不会回显" /></label>
+            <div class="provider-actions">
+              <button class="primary" :disabled="providerSaving || providerTesting" @click="saveProvider()">
+                {{ providerSaving ? "保存中" : "保存并启用" }}
+              </button>
+              <button class="secondary" :disabled="providerSaving || providerTesting" @click="testProviderConnection">
+                {{ providerTesting ? "测试中" : "保存并测试" }}
+              </button>
+            </div>
+            <p v-if="providerMessage" class="inline-success">{{ providerMessage }}</p>
+            <p v-if="providerError" class="inline-error">{{ providerError }}</p>
+            <small class="provider-note">API key 只在后端进程内使用，不会返回给页面。页面配置在 API 进程重启后恢复为环境变量配置。</small>
+          </div>
         </div>
         <div class="deployment-list">
           <div class="library-heading"><h2>算力与引擎</h2><button class="text-action" @click="loadWorkspace"><PhArrowClockwise :size="17" /> 刷新</button></div>
